@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Assistente IA</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: #0b1220; color: #e5e7eb; min-height: 100vh; }
+    .wrap { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+    h1 { font-size: 22px; margin-bottom: 4px; }
+    .sub { color: #8b93a7; font-size: 13px; margin-bottom: 24px; }
+    .card { background: #141c30; border: 1px solid #26314d; border-radius: 14px; padding: 18px; margin-bottom: 16px; }
+    .card h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em; color: #8b93a7; margin-bottom: 12px; }
+    .pill { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+    .open { background: #16a34a22; color: #4ade80; }
+    .qr { background: #dc262622; color: #f87171; }
+    .starting, .close { background: #d9770622; color: #fbbf24; }
+    .qrbox { display: flex; justify-content: center; padding: 8px 0; }
+    .qrbox img { width: 260px; height: 260px; image-rendering: pixelated; }
+    .rows { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .rows div { background: #0f1728; border-radius: 10px; padding: 10px 12px; }
+    .rows dt { font-size: 11px; color: #8b93a7; }
+    .rows dd { font-size: 15px; margin-top: 2px; font-weight: 600; }
+    .log { font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; max-height: 220px; overflow: auto; color: #9fe8a0; }
+    .muted { color: #8b93a7; font-size: 13px; }
+    @media (max-width: 480px) { .rows { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1 id="name">Assistente IA</h1>
+    <p class="sub" id="updated">Aguardando dados...</p>
+
+    <div class="card">
+      <h2>Status</h2>
+      <p><span class="pill starting" id="connection">carregando</span></p>
+    </div>
+
+    <div class="card">
+      <h2>QR Code</h2>
+      <p class="muted" id="qrState">Sem QR ativo</p>
+      <div class="qrbox" id="qrBox"></div>
+    </div>
+
+    <div class="card">
+      <h2>Informacoes</h2>
+      <div class="rows">
+        <div><dt>Gemini</dt><dd id="gemini">-</dd></div>
+        <div><dt>Modelo</dt><dd id="geminiModel">-</dd></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Logs recentes</h2>
+      <pre class="log" id="logs">Carregando...</pre>
+    </div>
+  </div>
+
+  <script>
+    const CONNECTED_GIF = "https://media.tenor.com/CD0Uav1XwdYAAAAC/twitter-blue-checkmark-twitter-checkmark.gif";
+    async function load() {
+      try {
+        const r = await fetch("/api/status");
+        const d = await r.json();
+        document.getElementById("name").textContent = d.botName || "Assistente IA";
+        document.getElementById("updated").textContent = "Atualizado em " + new Date(d.runtime.updatedAt).toLocaleString();
+        const conn = d.runtime.connection || "unknown";
+        const pill = document.getElementById("connection");
+        pill.textContent = conn;
+        pill.className = "pill " + conn;
+        const qrState = document.getElementById("qrState");
+        const qrBox = document.getElementById("qrBox");
+        if (d.qrImage) {
+          qrState.textContent = "Leia este QR no WhatsApp (Aparelhos conectados)";
+          qrBox.innerHTML = `<img src="${d.qrImage}" alt="QR">`;
+        } else {
+          qrState.textContent = conn === "open" ? "Conectado" : "Sem QR ativo";
+          qrBox.innerHTML = conn === "open" ? `<img src="${CONNECTED_GIF}">` : "";
+        }
+        document.getElementById("gemini").textContent = d.gemini?.configured ? "configurada" : "sem chave";
+        document.getElementById("geminiModel").textContent = d.gemini?.model || "-";
+        document.getElementById("logs").textContent = d.runtime?.lastError ? "Erro: " + d.runtime.lastError : "Sem logs registrados.";
+      } catch (e) {
+        document.getElementById("logs").textContent = "Erro ao consultar status: " + e.message;
+      }
+    }
+    load();
+    setInterval(load, 4000);
+  </script>
+</body>
+</html>

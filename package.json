@@ -1,0 +1,21 @@
+{
+  "name": "assistente",
+  "version": "1.0.0",
+  "description": "Assistente pessoal de IA no WhatsApp (texto, audio, imagem e geracao de imagem) usando Gemini.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "web": "node web.js",
+    "check": "node --check src/index.js && node --check web.js && node --check src/lib/gemini.js && node --check src/lib/messages.js && node --check src/lib/logger.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.18",
+    "express": "^4.21.2",
+    "pino": "^9.5.0",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "overrides": {
+    "protobufjs": "^7.5.5"
+  }
+}
