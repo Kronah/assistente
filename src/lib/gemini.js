@@ -9,13 +9,11 @@ loadEnv();
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
-const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-3-pro-image";
+const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const GEMINI_IMAGE_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_IMAGE_MODEL}:generateContent`;
 const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 25 * 1000);
 const GEMINI_IMAGE_TIMEOUT_MS = Number(process.env.GEMINI_IMAGE_TIMEOUT_MS || 60 * 1000);
-const MAX_IMAGE_BYTES = Number(process.env.GEMINI_MAX_IMAGE_BYTES || 10 * 1024 * 1024);
-const MAX_AUDIO_BYTES = Number(process.env.GEMINI_MAX_AUDIO_BYTES || 20 * 1024 * 1024);
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
 const GEMINI_USAGE_FILE = process.env.GEMINI_USAGE_FILE || path.join(DATA_DIR, "gemini-usage.json");
 const DEFAULT_SYSTEM_PROMPT = [
@@ -25,8 +23,6 @@ const DEFAULT_SYSTEM_PROMPT = [
   "Quando faltar informacao, faca uma pergunta objetiva.",
   "Nao invente dados."
 ].join(" ");
-
-let quotaBlockedUntil = 0;
 
 function getEndOfDayTimestamp() {
   const now = new Date();
@@ -39,8 +35,7 @@ function getTodayKey() {
 
 function readUsage() {
   try {
-    const raw = fs.readFileSync(GEMINI_USAGE_FILE, "utf8");
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(fs.readFileSync(GEMINI_USAGE_FILE, "utf8"));
     const today = getTodayKey();
 
     if (parsed?.date !== today) {
@@ -50,7 +45,7 @@ function readUsage() {
         success: 0,
         errors: 0,
         quotaErrors: 0,
-        quotaBlockedUntil: 0,
+        quotaBlocks: {},
         updatedAt: new Date().toISOString()
       };
     }
@@ -61,7 +56,7 @@ function readUsage() {
       success: Number(parsed.success || 0),
       errors: Number(parsed.errors || 0),
       quotaErrors: Number(parsed.quotaErrors || 0),
-      quotaBlockedUntil: Number(parsed.quotaBlockedUntil || 0),
+      quotaBlocks: parsed.quotaBlocks && typeof parsed.quotaBlocks === "object" ? parsed.quotaBlocks : {},
       updatedAt: parsed.updatedAt || new Date().toISOString()
     };
   } catch (error) {
@@ -71,7 +66,7 @@ function readUsage() {
       success: 0,
       errors: 0,
       quotaErrors: 0,
-      quotaBlockedUntil: 0,
+      quotaBlocks: {},
       updatedAt: new Date().toISOString()
     };
   }
@@ -92,9 +87,9 @@ function mutateUsage(mutator) {
 
 function getGeminiQuotaStatus() {
   const usage = readUsage();
-  const blockedUntil = Math.max(usage.quotaBlockedUntil || 0, quotaBlockedUntil || 0);
-  const isBlocked = Date.now() < blockedUntil;
-  const isExhausted = isBlocked || Number(usage.quotaErrors || 0) > 0;
+  const now = Date.now();
+  const textBlocked = isModelBlocked(usage, GEMINI_MODEL, now);
+  const imageBlocked = isModelBlocked(usage, GEMINI_IMAGE_MODEL, now);
 
   return {
     date: usage.date,
@@ -102,41 +97,32 @@ function getGeminiQuotaStatus() {
     success: usage.success,
     errors: usage.errors,
     quotaErrors: usage.quotaErrors,
-    blockedUntil,
-    isBlocked,
-    isExhausted,
+    textBlocked,
+    imageBlocked,
     updatedAt: usage.updatedAt
   };
 }
 
-function isGeminiConfigured() {
-  return Boolean(GEMINI_API_KEY);
+function isModelBlocked(usage, model, now) {
+  const blockedUntil = Number(usage.quotaBlocks?.[model] || 0);
+  return Date.now() < blockedUntil;
 }
 
-function checkQuota() {
+function checkQuota(model) {
   const usage = readUsage();
-  const persistedBlockedUntil = Number(usage.quotaBlockedUntil || 0);
-  const hasQuotaErrorToday = Number(usage.quotaErrors || 0) > 0;
-  const effectiveBlockedUntil = Math.max(quotaBlockedUntil, persistedBlockedUntil);
-
-  if (Date.now() < effectiveBlockedUntil || hasQuotaErrorToday) {
-    if (!quotaBlockedUntil && hasQuotaErrorToday) {
-      quotaBlockedUntil = getEndOfDayTimestamp();
-    } else {
-      quotaBlockedUntil = effectiveBlockedUntil;
-    }
+  if (isModelBlocked(usage, model, Date.now())) {
     return true;
   }
-
   return false;
 }
 
-function recordError(isQuotaError) {
+function recordError(model, isQuotaError) {
   mutateUsage((usage) => {
     usage.errors += 1;
     if (isQuotaError) {
       usage.quotaErrors += 1;
-      usage.quotaBlockedUntil = quotaBlockedUntil;
+      usage.quotaBlocks = usage.quotaBlocks || {};
+      usage.quotaBlocks[model] = getEndOfDayTimestamp();
     }
     return usage;
   });
@@ -205,19 +191,30 @@ function extractInlineImage(data) {
   return part?.inlineData || null;
 }
 
+function trackRequest() {
+  mutateUsage((usage) => {
+    usage.requests += 1;
+    return usage;
+  });
+}
+
+function trackSuccess() {
+  mutateUsage((usage) => {
+    usage.success += 1;
+    return usage;
+  });
+}
+
 async function askGemini(prompt, options = {}) {
   if (!GEMINI_API_KEY) {
     throw new Error("GEMINI_API_KEY nao configurada.");
   }
 
-  if (checkQuota()) {
-    throw new Error("Cota Gemini estourada no dia atual.");
+  if (checkQuota(GEMINI_MODEL)) {
+    throw new Error(`Cota estourada para o modelo de texto ${GEMINI_MODEL} no dia atual.`);
   }
 
-  mutateUsage((usage) => {
-    usage.requests += 1;
-    return usage;
-  });
+  trackRequest();
 
   const systemPrompt = options.systemPrompt || process.env.GEMINI_SYSTEM_PROMPT || DEFAULT_SYSTEM_PROMPT;
   const parts = buildParts({
@@ -228,14 +225,6 @@ async function askGemini(prompt, options = {}) {
 
   if (!parts.length) {
     throw new Error("Nada para enviar ao Gemini.");
-  }
-
-  if (options.image && !options.image.base64) {
-    throw new Error("Imagem sem dados base64.");
-  }
-
-  if (options.audio && !options.audio.base64) {
-    throw new Error("Audio sem dados base64.");
   }
 
   let response;
@@ -262,28 +251,17 @@ async function askGemini(prompt, options = {}) {
   if (!response.ok) {
     const message = data.error?.message || `Erro HTTP ${response.status}`;
     const isQuotaError = message.toLowerCase().includes("quota");
-    if (isQuotaError) {
-      quotaBlockedUntil = getEndOfDayTimestamp();
-      mutateUsage((usage) => {
-        usage.quotaBlockedUntil = quotaBlockedUntil;
-        return usage;
-      });
-    }
-    recordError(isQuotaError);
+    recordError(GEMINI_MODEL, isQuotaError);
     throw new Error(message);
   }
 
   const text = extractText(data);
   if (!text) {
-    recordError(false);
+    recordError(GEMINI_MODEL, false);
     throw new Error("A Gemini API nao retornou texto.");
   }
 
-  mutateUsage((usage) => {
-    usage.success += 1;
-    return usage;
-  });
-
+  trackSuccess();
   return text;
 }
 
@@ -292,14 +270,11 @@ async function generateImage(prompt, options = {}) {
     throw new Error("GEMINI_API_KEY nao configurada.");
   }
 
-  if (checkQuota()) {
-    throw new Error("Cota Gemini estourada no dia atual.");
+  if (checkQuota(GEMINI_IMAGE_MODEL)) {
+    throw new Error(`Cota estourada para o modelo de imagem ${GEMINI_IMAGE_MODEL} no dia atual.`);
   }
 
-  mutateUsage((usage) => {
-    usage.requests += 1;
-    return usage;
-  });
+  trackRequest();
 
   const systemPrompt = options.systemPrompt || process.env.GEMINI_SYSTEM_PROMPT || DEFAULT_SYSTEM_PROMPT;
   const text = String(prompt || "").trim();
@@ -331,14 +306,7 @@ async function generateImage(prompt, options = {}) {
   if (!response.ok) {
     const message = data.error?.message || `Erro HTTP ${response.status}`;
     const isQuotaError = message.toLowerCase().includes("quota");
-    if (isQuotaError) {
-      quotaBlockedUntil = getEndOfDayTimestamp();
-      mutateUsage((usage) => {
-        usage.quotaBlockedUntil = quotaBlockedUntil;
-        return usage;
-      });
-    }
-    recordError(isQuotaError);
+    recordError(GEMINI_IMAGE_MODEL, isQuotaError);
     throw new Error(message);
   }
 
@@ -346,10 +314,7 @@ async function generateImage(prompt, options = {}) {
   const textPart = extractText(data);
 
   if (image) {
-    mutateUsage((usage) => {
-      usage.success += 1;
-      return usage;
-    });
+    trackSuccess();
     return {
       base64: image.data,
       mimeType: image.mimeType,
@@ -357,8 +322,12 @@ async function generateImage(prompt, options = {}) {
     };
   }
 
-  recordError(false);
+  recordError(GEMINI_IMAGE_MODEL, false);
   throw new Error(textPart || "A API de imagem nao retornou nenhuma imagem.");
+}
+
+function isGeminiConfigured() {
+  return Boolean(GEMINI_API_KEY);
 }
 
 module.exports = {
